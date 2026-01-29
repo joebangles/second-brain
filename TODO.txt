@@ -1,0 +1,8 @@
+Run locally on docker or on the cloud.
+- If you docker-compose in terminal a server is launched, and the front-end is launched
+- Have a config (env variable, yaml, whatever) so that you can toggle whether the front-end will be connected to a local backend or the cloud.
+- Possible three containers for caching.
+
+Make a UI.
+
+Implement better memory.

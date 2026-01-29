@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+
+# Transcription outputs
+transcriptions.txt
+*.wav
+*.mp3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model cache
+.cache/
+*.model
+
+# Environment
+.env
+.ENV
+
+# Credentials and tokens
+credentials.json
+token.json
+*.json.token
+
+# Session files
+session_*.txt
+notes.txt
