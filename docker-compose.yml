@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/.venv  # Exclude venv from mount
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_BACKEND_WS_URL=ws://localhost:8000/ws/transcribe
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  # Exclude node_modules from mount
+    command: npm run dev -- --host
+    depends_on:
+      - backend
