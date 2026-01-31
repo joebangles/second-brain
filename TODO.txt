@@ -3,6 +3,4 @@ Run locally on docker or on the cloud.
 - Have a config (env variable, yaml, whatever) so that you can toggle whether the front-end will be connected to a local backend or the cloud.
 - Possible three containers for caching.
 
-Make a UI.
-
 Implement better memory.
