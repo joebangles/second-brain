@@ -405,17 +405,22 @@ async def chat_mode():
     from rich.console import Console
     from rich.panel import Panel
     from rich.markdown import Markdown
-    
+
     console = Console()
-    
-    # Load notes
-    notes_content = ""
+
+    # Try to use memory system for intelligent retrieval
+    use_memory_system = False
+    db = None
+    retrieval = None
     try:
-        with open("notes.txt", "r", encoding="utf-8") as f:
-            notes_content = f.read()
-    except FileNotFoundError:
+        from memory.storage import MemoryDatabase
+        from memory.retrieval import MemoryRetrieval
+        db = MemoryDatabase("memory.db")
+        retrieval = MemoryRetrieval(db)
+        use_memory_system = True
+    except Exception:
         pass
-    
+
     # Load calendar events (upcoming)
     calendar_content = ""
     try:
@@ -423,7 +428,7 @@ async def chat_mode():
         calendar_content = list_calendar_events(max_results=20)
     except Exception:
         pass
-    
+
     console.print()
     console.print(Panel(
         "[bold]SECOND BRAIN - Chat Mode[/bold]\n\n"
@@ -432,39 +437,69 @@ async def chat_mode():
         border_style="blue"
     ))
     console.print()
-    
+
     # Show what's loaded
-    if notes_content:
-        note_count = notes_content.count("---")
-        console.print(f"[dim]Loaded {note_count} notes[/dim]")
+    if use_memory_system:
+        stats = db.get_stats()
+        console.print(f"[dim]Memory system active: {stats['total_memories']} memories loaded[/dim]")
     else:
-        console.print("[dim]No notes found[/dim]")
-    
+        # Fall back to file-based notes
+        try:
+            with open("notes.txt", "r", encoding="utf-8") as f:
+                note_count = f.read().count("---")
+            console.print(f"[dim]Loaded {note_count} notes (file-based)[/dim]")
+        except FileNotFoundError:
+            console.print("[dim]No notes found[/dim]")
+
     if calendar_content and "No upcoming events" not in calendar_content:
         console.print(f"[dim]Calendar loaded[/dim]")
     console.print()
-    
+
     # Import the agent
     from delegation_agent import process_utterance_with_tools
-    
+
     while True:
         try:
             user_input = console.input("[bold blue]You:[/bold blue] ").strip()
-            
+
             if not user_input:
                 continue
-            
+
             if user_input.lower() in ("exit", "quit", "q"):
                 console.print("\n[dim]Goodbye![/dim]")
                 break
-            
+
             # Build context-aware prompt
             context_parts = []
-            if notes_content:
-                context_parts.append(f"USER'S NOTES:\n{notes_content}")
+
+            # Use memory system for intelligent retrieval if available
+            if use_memory_system and retrieval:
+                relevant_memories = retrieval.hybrid_search(user_input, top_k=10)
+                if relevant_memories:
+                    memory_lines = ["USER'S RELEVANT NOTES:"]
+                    for mem in relevant_memories:
+                        memory_lines.append(f"\n- {mem.title or 'Untitled'}")
+                        content_preview = mem.content[:300] if mem.content else ""
+                        if len(mem.content) > 300:
+                            content_preview += "..."
+                        memory_lines.append(f"  {content_preview}")
+                    context_parts.append("\n".join(memory_lines))
+
+                    # Update access stats
+                    retrieval.update_access_stats([m.id for m in relevant_memories])
+            else:
+                # Fall back to loading entire notes.txt
+                try:
+                    with open("notes.txt", "r", encoding="utf-8") as f:
+                        notes_content = f.read()
+                    if notes_content:
+                        context_parts.append(f"USER'S NOTES:\n{notes_content}")
+                except FileNotFoundError:
+                    pass
+
             if calendar_content:
                 context_parts.append(f"USER'S CALENDAR:\n{calendar_content}")
-            
+
             if context_parts:
                 context = "\n\n".join(context_parts)
                 prompt = f"""You have access to the user's second brain. Use this context to answer their question.
@@ -476,16 +511,16 @@ USER'S QUESTION: {user_input}
 Answer based on the context above. If the information isn't in their notes/calendar, say so. Be concise."""
             else:
                 prompt = user_input
-            
+
             console.print("[dim]Thinking...[/dim]")
-            
+
             # Get response
             result = await process_utterance_with_tools(prompt)
-            
+
             console.print()
             console.print(f"[bold green]Brain:[/bold green] {result.response}")
             console.print()
-            
+
         except KeyboardInterrupt:
             console.print("\n\n[dim]Goodbye![/dim]")
             break

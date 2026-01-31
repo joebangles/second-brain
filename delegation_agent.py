@@ -25,9 +25,17 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from agents import coordinator
+from agents import coordinator, general_agent
 
 load_dotenv()
+
+# Import memory system for intelligent context retrieval
+try:
+    from memory.storage import MemoryDatabase
+    from memory.retrieval import MemoryRetrieval
+    MEMORY_AVAILABLE = True
+except ImportError:
+    MEMORY_AVAILABLE = False
 
 # Configure Google AI backend
 # Priority: Vertex AI (if project set) > Google AI Studio (if API key set)
@@ -69,8 +77,33 @@ runner = Runner(
     session_service=session_service,
 )
 
+# Separate runner for recall-only chat (no tool routing)
+recall_session_service = InMemorySessionService()
+recall_runner = Runner(
+    agent=general_agent,
+    app_name=f"{APP_NAME}_recall",
+    session_service=recall_session_service,
+)
+
 # Counter for unique session IDs
 _session_counter = 0
+
+# Global memory system instances
+_memory_db: Optional[MemoryDatabase] = None
+_memory_retrieval: Optional[MemoryRetrieval] = None
+
+
+def _get_memory_system():
+    """Get or initialize the memory system."""
+    global _memory_db, _memory_retrieval
+    if _memory_db is None and MEMORY_AVAILABLE:
+        try:
+            _memory_db = MemoryDatabase("memory.db")
+            _memory_retrieval = MemoryRetrieval(_memory_db)
+        except Exception as e:
+            print(f"Warning: Memory system unavailable: {e}")
+            return None, None
+    return _memory_db, _memory_retrieval
 
 
 async def create_fresh_session() -> str:
@@ -86,14 +119,50 @@ async def create_fresh_session() -> str:
     return session_id
 
 
+async def create_fresh_recall_session() -> str:
+    """Create a fresh session for recall queries."""
+    global _session_counter
+    _session_counter += 1
+    session_id = f"recall_{_session_counter}_{int(datetime.now().timestamp())}"
+    await recall_session_service.create_session(
+        app_name=f"{APP_NAME}_recall",
+        user_id=USER_ID,
+        session_id=session_id,
+    )
+    return session_id
+
+
 async def _process_utterance_internal(text: str) -> ProcessingResult:
     """Internal processing function (no retry logic)."""
     # Create a fresh session for each utterance to ensure proper coordinator routing
     session_id = await create_fresh_session()
-    
+
+    # Retrieve relevant memories for context
+    memory_context = ""
+    try:
+        db, retrieval = _get_memory_system()
+        if db and retrieval:
+            relevant_memories = retrieval.hybrid_search(text, top_k=5)
+
+            if relevant_memories:
+                context_parts = ["RELEVANT MEMORIES:"]
+                for mem in relevant_memories:
+                    title = mem.title or "Untitled"
+                    content_preview = mem.content[:150] if mem.content else ""
+                    if len(mem.content) > 150:
+                        content_preview += "..."
+                    context_parts.append(f"- {title}: {content_preview}")
+                memory_context = "\n".join(context_parts) + "\n\n"
+
+                # Update access stats for retrieved memories
+                retrieval.update_access_stats([m.id for m in relevant_memories])
+    except Exception as e:
+        # Fail gracefully if memory system unavailable
+        pass
+
     # Include current date/time context with the user's message
     context = get_current_datetime_context()
-    message_with_context = f"{context}\n\nUser: {text}"
+    message_with_context = f"{context}\n\n{memory_context}User: {text}"
     
     # Create the user message in the correct format
     user_message = types.Content(
@@ -168,6 +237,53 @@ async def _process_utterance_internal(text: str) -> ProcessingResult:
     )
 
 
+async def _process_recall_internal(text: str) -> ProcessingResult:
+    """Process a recall query using the general agent (no tool routing)."""
+    session_id = await create_fresh_recall_session()
+    
+    context = get_current_datetime_context()
+    message_with_context = f"{context}\n\nUser: {text}"
+    
+    user_message = types.Content(
+        role="user",
+        parts=[types.Part(text=message_with_context)]
+    )
+    
+    all_text_responses = []
+    
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+    
+    try:
+        async for event in recall_runner.run_async(
+            user_id=USER_ID,
+            session_id=session_id,
+            new_message=user_message,
+        ):
+            if hasattr(event, 'content') and event.content:
+                if hasattr(event.content, 'parts'):
+                    for part in event.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            all_text_responses.append(part.text)
+            if hasattr(event, 'text') and event.text:
+                all_text_responses.append(event.text)
+    finally:
+        sys.stdout, sys.stderr = old_stdout, old_stderr
+    
+    final_response = ""
+    for resp in reversed(all_text_responses):
+        if resp and resp.strip():
+            final_response = resp.strip()
+            break
+    
+    return ProcessingResult(
+        response=final_response if final_response else "No response generated",
+        tools_used=[],
+        agents_used=["general_agent"],
+    )
+
+
 async def process_utterance_with_tools(text: str, max_retries: int = 5) -> ProcessingResult:
     """Process a single utterance with automatic retry on rate limit errors."""
     import random
@@ -195,6 +311,35 @@ async def process_utterance_with_tools(text: str, max_retries: int = 5) -> Proce
                 raise
     
     # All retries exhausted
+    return ProcessingResult(
+        response=f"Rate limit exceeded after {max_retries} retries.",
+        tools_used=[],
+        agents_used=[],
+    )
+
+
+async def process_recall_query(text: str, max_retries: int = 5) -> ProcessingResult:
+    """Process a recall query with retry on rate limit errors."""
+    import random
+    
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                wait_time = (5 * (2 ** (attempt - 1))) + random.uniform(0, 2)
+                print(f"  [Recall Retry {attempt + 1}/{max_retries}] waiting {wait_time:.0f}s...")
+                await asyncio.sleep(wait_time)
+            
+            return await _process_recall_internal(text)
+            
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                last_error = e
+                continue
+            else:
+                raise
+    
     return ProcessingResult(
         response=f"Rate limit exceeded after {max_retries} retries.",
         tools_used=[],

@@ -41,3 +41,18 @@ token.json
 # Session files
 session_*.txt
 notes.txt
+
+# Memory database
+memory.db
+memory.db-*
+test_memory.db
+test_migration.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+*.local
+
+# Debug logs
+.cursor/debug.log
