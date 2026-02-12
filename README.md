@@ -174,7 +174,3 @@ Plus binary PCM s16le audio frames while recording.
 ### Google API Credentials
 
 For calendar/notes tools, place `credentials.json` in the project root. The app generates `token.json` on first run.
-
-## License
-
-[Add your license here]
