@@ -214,14 +214,7 @@ Plus binary PCM s16le audio frames while recording.
 
 ### Google API Credentials
 
-<<<<<<< Updated upstream
 For calendar/notes tools, place `credentials.json` in the project root. The app generates `token.json` on first run.
-
-## License
-
-[Add your license here]
-=======
-For calendar tools, place `credentials.json` in the project root. The app generates `token.json` on first run via OAuth2 flow.
 
 ### Testing
 
@@ -240,4 +233,3 @@ python test_websocket.py
 - Cloud embeddings option (Gemini) for higher quality
 - Memory clustering and graph relations between notes
 - Multi-modal memory (images, audio, documents)
->>>>>>> Stashed changes
