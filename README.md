@@ -1,17 +1,22 @@
 # Second Brain
 
-An integrated voice assistant application that processes spoken prompts through an AI agent system.
+An integrated voice assistant that processes spoken prompts through a multi-agent AI system with semantic memory.
 
 ## Features
 
-- Real-time voice transcription using Speechmatics
-- AI agent system for processing prompts
-- Calendar and notes management tools
-- Queue-based prompt processing
-- Rich terminal display interface
-- React web UI with live transcription
+- Real-time voice transcription using Speechmatics RT
+- Multi-agent system (Google ADK + Gemini 2.0 Flash) routing to calendar, notes, and general agents
+- Semantic memory system with hybrid search (keyword + vector similarity)
+- Automatic context injection from stored memories into agent prompts
+- Google Calendar integration (add, list, delete events)
+- Note saving with local embeddings and full-text search
+- Text chat mode with semantic memory recall
+- React web UI with live transcription and recording controls
 - WebSocket API for browser-based clients
-- Docker support for easy deployment
+- Rich terminal display interface
+- Queue-based prompt processing
+- Docker Compose deployment
+- Session log consolidation via Gemini AI
 
 ## Quick Start
 
@@ -64,7 +69,7 @@ docker-compose up
 1. Start the backend: `uvicorn server:app --host 0.0.0.0 --port 8000 --reload`
 2. Start the frontend: `cd frontend && npm run dev`
 3. Open http://localhost:5173
-4. Click "Start Listening" and speak
+4. Click "Start Listening" and speak, or switch to Chat mode for text queries
 
 ### Terminal Mode (Direct Microphone)
 
@@ -78,28 +83,60 @@ python app.py
 # Process an audio file
 python app.py --file path/to/audio.wav
 
-# Interactive chat mode (text only)
+# Interactive chat mode (text only, uses semantic memory recall)
 python app.py --chat
 ```
+
+## Memory System
+
+The application includes an advanced semantic memory system that enhances agent responses with relevant context from past interactions.
+
+- **Hybrid search**: Combines FTS5 keyword matching (30%), vector similarity via sentence-transformers (50%), recency (10%), and importance scoring (10%)
+- **Context injection**: Before processing any query, the top 5 relevant memories are automatically retrieved and injected into the agent prompt
+- **Local embeddings**: Uses `all-MiniLM-L6-v2` (384 dimensions) locally with no API costs
+- **Backward compatible**: Notes are saved to both the memory database and `notes.txt`
+
+The memory system works transparently in both voice and chat modes, including via the web UI.
+
+See [MEMORY_SETUP.md](MEMORY_SETUP.md) for detailed setup, usage, and architecture documentation.
 
 ## Project Structure
 
 ```
 .
-├── frontend/                # React web UI
+├── frontend/                    # React web UI
 │   ├── src/
-│   │   ├── components/      # UI components
-│   │   ├── hooks/           # React hooks (WebSocket, audio)
-│   │   └── App.tsx          # Main app component
-│   └── public/
-│       └── audio-processor.js  # AudioWorklet for mic capture
-├── agents/                  # AI agent implementations
-├── tools/                   # Tool modules (calendar, notes)
-├── app.py                   # Terminal application
-├── server.py                # FastAPI WebSocket server
-├── delegation_agent.py      # Agent orchestration
-├── docker-compose.yml       # Docker orchestration
-└── requirements.txt         # Python dependencies
+│   │   ├── components/          # Controls, StatusIndicator, TranscriptDisplay
+│   │   ├── hooks/               # useWebSocket, useAudioCapture
+│   │   ├── App.tsx              # Main app component (voice + chat modes)
+│   │   └── main.tsx             # Entry point
+│   ├── public/
+│   │   ├── audio-processor.js   # AudioWorklet for mic capture
+│   │   └── brain.svg
+│   ├── Dockerfile
+│   └── package.json
+├── memory/                      # Semantic memory system
+│   ├── types.py                 # Memory and SearchResult data classes
+│   ├── storage.py               # SQLite + FTS5 database layer
+│   ├── embeddings.py            # sentence-transformers integration
+│   ├── retrieval.py             # Hybrid search + reranking
+│   └── consolidation.py         # Session log analysis
+├── agents/
+│   └── agents.py                # Calendar, notes, general, and coordinator agents
+├── tools/
+│   ├── calendar_tools.py        # Google Calendar integration (OAuth2)
+│   ├── notes_tools.py           # Note saving (memory DB + notes.txt)
+│   └── memory_tools.py          # Memory admin tools (stats, rebuild, migrate)
+├── app.py                       # Terminal application (voice, file, chat modes)
+├── server.py                    # FastAPI WebSocket server
+├── delegation_agent.py          # Agent orchestration + memory context injection
+├── display.py                   # Rich terminal display
+├── test_memory.py               # Memory system tests
+├── test_websocket.py            # WebSocket connectivity tests
+├── docker-compose.yml           # Docker orchestration (backend + frontend)
+├── Dockerfile.backend           # Backend container (Python 3.11)
+├── requirements.txt             # Python dependencies
+└── .env.example                 # Environment template
 ```
 
 ## Configuration
@@ -109,8 +146,9 @@ python app.py --chat
 | Variable | Description |
 |----------|-------------|
 | `SPEECHMATICS_API_KEY` | Speechmatics RT API key |
+| `TIMEZONE` | Timezone for date/time context (e.g., `America/Los_Angeles`) |
 | `GOOGLE_API_KEY` | Google AI Studio API key (free tier) |
-| `GOOGLE_CLOUD_PROJECT` | Vertex AI project (alternative) |
+| `GOOGLE_CLOUD_PROJECT` | Vertex AI project (alternative to AI Studio) |
 | `HOST` | Server host (default: 0.0.0.0) |
 | `PORT` | Server port (default: 8000) |
 | `ALLOWED_ORIGINS` | CORS origins for web clients |
@@ -132,13 +170,15 @@ Connect to `ws://localhost:8000/ws/transcribe`:
 3. Send binary audio frames
 4. Send `stop` → Stop recording, wait for processing
 5. Repeat from step 2 (connection stays open)
-6. Close WebSocket when done
+6. Or send `chat` messages at any time for text queries
+7. Close WebSocket when done
 
 ### Client → Server Messages
 
 ```json
 {"type": "start", "sampleRate": 16000, "language": "en"}  // Start recording
-{"type": "stop"}  // Stop recording (waits for processing to complete)
+{"type": "stop"}                                            // Stop recording (waits for processing)
+{"type": "chat", "text": "Where did I eat Thai food?"}     // Text chat query (semantic memory recall)
 ```
 Plus binary PCM s16le audio frames while recording.
 
@@ -161,6 +201,7 @@ Plus binary PCM s16le audio frames while recording.
 - **Stop waits for processing**: When you stop, pending utterances continue processing and responses are delivered before `stopped` is sent
 - **Multiple record cycles**: Stop and start multiple times without reconnecting
 - **Partial text flush**: If you stop mid-utterance, any pending partial text is automatically enqueued for processing
+- **Chat queries**: Send text queries at any time; they use semantic memory retrieval and bypass the transcription pipeline
 
 ## Development
 
@@ -173,7 +214,25 @@ Plus binary PCM s16le audio frames while recording.
 
 ### Google API Credentials
 
-For calendar/notes tools, place `credentials.json` in the project root. The app generates `token.json` on first run.
+For calendar tools, place `credentials.json` in the project root. The app generates `token.json` on first run via OAuth2 flow.
+
+### Testing
+
+```bash
+# Memory system tests
+python test_memory.py
+
+# WebSocket connectivity test
+python test_websocket.py
+```
+
+## Future Work
+
+- Container-level caching layer (e.g., Redis) for embedding and search results
+- FAISS index for faster vector search at scale (10k+ memories)
+- Cloud embeddings option (Gemini) for higher quality
+- Memory clustering and graph relations between notes
+- Multi-modal memory (images, audio, documents)
 
 ## License
 
